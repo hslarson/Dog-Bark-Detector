@@ -1,12 +1,14 @@
 #include <ThingSpeak.h>
 #include <arduinoFFT.h>
 #include <ESP8266WiFi.h>
+#include "Pushover.h"
 #include "constants.h" // Not Included Because it Contains Passwords & Stuff
 
 
 // Declare Functions & Global Variables
 WiFiClient client;
 arduinoFFT FFT = arduinoFFT();
+Pushover messenger = Pushover(APP_TOKEN, USER_TOKEN, UNSAFE);
 
 int bark_count = 0;
 bool barking = false;
@@ -19,8 +21,9 @@ double vImag[SAMPLES];
 int  timer();
 bool isBarking();
 double getAudioLevel();
+void sendNotification();
 bool connectToNetwork();
-bool checkToneEnabled(bool);
+bool checkSettings(bool);
 void sendToServer(int, int);
 
 
@@ -39,7 +42,7 @@ void setup() {
 
     // Start ThingSpeak
     ThingSpeak.begin(client);
-    checkToneEnabled(true);
+    checkSettings(true);
 
     // Calculate Sampling Period
     sampling_period_us = round(1000000*(1.0 / SAMPLING_FREQUENCY));
@@ -54,7 +57,7 @@ void loop() {
             bark_count = 0;
             break;
         case 1:
-            checkToneEnabled(true);
+            checkSettings(true);
             break;
     };
 
@@ -81,7 +84,7 @@ void loop() {
         bark_count++; 
 
         // Play Tone 
-        if (checkToneEnabled(false))
+        if (checkSettings(false))
             tone(BUZZER_PIN, BUZZER_FREQUENCY, BUZZER_LINGERING_TIME * 1000);
     }
 }
@@ -96,7 +99,7 @@ int timer() {
         bark_start = millis();
         return 0;
     }
-    if ( abs(millis() - tone_enabled_check) / (TONE_CHECK_INTERVAL * 1000 * 60) ) {
+    if ( abs(millis() - tone_enabled_check) / (SETTINGS_CHECK_INTERVAL * 1000 * 60) ) {
         tone_enabled_check = millis();
         return 1; 
     }
@@ -187,6 +190,30 @@ double getAudioLevel() {
 }
 
 
+// Sends a Pushover Notification Displaying the Daily Bark Total
+void sendNotification() {
+    if (!connectToNetwork())
+        return;
+  
+    if (DEBUG) {Serial.println("\nSending Notification");}
+    messenger.setTitle("Daily Bark Report🐶");
+
+    int barks_today = ThingSpeak.readIntField(CHANNEL, 3, READ_API_KEY);
+
+    String msg = "Banjo has only barked " + String(barks_today) + (barks_today == 1 ? " time" : " times") + " today.";
+    if (isnan(barks_today) || barks_today == 0) 
+        msg = "No Barks Detected Today";
+        
+    messenger.setUrl(LINK_TO_THINGSPEAK);
+    messenger.setUrlTitle("View Detailed Report");
+    
+    messenger.setMessage(msg);
+    if (DEBUG) {Serial.println((messenger.send() ? "Notification Sent" : "Notification Falied to Send"));}
+
+    return;
+}
+
+
 // Attempts to Connect to WiFi, Returns True if Connected
 bool connectToNetwork() {
     if (WiFi.status() == WL_CONNECTED)
@@ -213,18 +240,22 @@ bool connectToNetwork() {
 
 
 // Pulls Data from ThingSpeak to See if the Buzzer is Enabled
-bool checkToneEnabled(bool check) {
+bool checkSettings(bool check) {
         static bool tone_enabled = false;
 
         if (!check || !connectToNetwork())
             return tone_enabled;
-            
-        tone_enabled = (ThingSpeak.readIntField(CHANNEL, 2, READ_API_KEY) == 1 ? true : false);
+
+        int response = ThingSpeak.readIntField(CHANNEL, 2, READ_API_KEY);
+        tone_enabled = (response == 1 || response == 3);
         
         if (DEBUG) {
             Serial.print("Buzzer Status: ");
             Serial.println((tone_enabled ? "ENABLED" : "DISABLED"));
         }
+
+        if (response > 1)
+            sendNotification();
 
         return tone_enabled;
 }
